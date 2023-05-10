@@ -11,10 +11,9 @@ use SilverStripe\GraphQL\Schema\DataObject\Plugin\QueryFilter\FieldFilterRegistr
 use SilverStripe\GraphQL\Schema\DataObject\Plugin\QueryFilter\FilterRegistryInterface;
 use SilverStripe\GraphQL\Schema\DataObject\Plugin\QueryFilter\ListFieldFilterInterface;
 use SilverStripe\GraphQL\Schema\Exception\SchemaBuilderException;
-use SilverStripe\GraphQL\Schema\Field\Field;
 use SilverStripe\GraphQL\Schema\Field\ModelField;
 use SilverStripe\GraphQL\Schema\Field\ModelQuery;
-use SilverStripe\GraphQL\Schema\Interfaces\ModelQueryPlugin;
+use SilverStripe\GraphQL\Schema\Interfaces\ModelFieldPlugin;
 use SilverStripe\GraphQL\Schema\Interfaces\SchemaUpdater;
 use SilverStripe\GraphQL\Schema\Schema;
 use SilverStripe\GraphQL\Schema\Services\NestedInputBuilder;
@@ -24,7 +23,7 @@ use SilverStripe\GraphQL\Schema\Type\Type;
 /**
  * Generic plugin that can be used for filter inputs
  */
-abstract class AbstractQueryFilterPlugin implements SchemaUpdater, ModelQueryPlugin
+abstract class AbstractQueryFilterPlugin implements SchemaUpdater, ModelFieldPlugin
 {
     use Injectable;
     use Configurable;
@@ -75,24 +74,24 @@ abstract class AbstractQueryFilterPlugin implements SchemaUpdater, ModelQueryPlu
     }
 
     /**
-     * @param ModelQuery $query
+     * @param ModelQuery $field
      * @param Schema $schema
      * @param array $config
      * @throws SchemaBuilderException
      */
-    public function apply(ModelQuery $query, Schema $schema, array $config = []): void
+    public function apply(ModelField $field, Schema $schema, array $config = []): void
     {
         $fields = $config['fields'] ?? Schema::ALL;
         $resolvers = $config['resolve'] ?? [];
-        $builder = NestedInputBuilder::create($query, $schema, $fields, $resolvers);
+        $builder = NestedInputBuilder::create($field, $schema, $fields, $resolvers);
         $this->updateInputBuilder($builder);
         $builder->populateSchema();
         if (!$builder->getRootType()) {
             return;
         }
-        $query->addArg($this->getFieldName(), $builder->getRootType()->getName());
-        $canonicalType = $schema->getCanonicalType($query->getNamedType());
-        $rootType = $canonicalType ? $canonicalType->getName() : $query->getNamedType();
+        $field->addArg($this->getFieldName(), $builder->getRootType()->getName());
+        $canonicalType = $schema->getCanonicalType($field->getNamedType());
+        $rootType = $canonicalType ? $canonicalType->getName() : $field->getNamedType();
         $resolvers = $builder->getResolvers();
         $context = [
             'fieldName' => $this->getFieldName(),
@@ -102,7 +101,7 @@ abstract class AbstractQueryFilterPlugin implements SchemaUpdater, ModelQueryPlu
             $context['resolvers'] = $resolvers;
         }
 
-        $query->addResolverAfterware(
+        $field->addResolverAfterware(
             $this->getResolver($config),
             $context
         );
