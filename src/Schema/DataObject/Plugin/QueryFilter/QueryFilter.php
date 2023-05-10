@@ -44,16 +44,16 @@ class QueryFilter extends AbstractQueryFilterPlugin
     /**
      * @throws SchemaBuilderException
      */
-    public function apply(ModelQuery $query, Schema $schema, array $config = []): void
+    public function apply(ModelField $field, Schema $schema, array $config = []): void
     {
         Schema::invariant(
             is_subclass_of(
-                $query->getModel()->getSourceClass(),
+                $field->getModel()->getSourceClass(),
                 DataObject::class
             ),
             'Cannot apply plugin %s to a query that is not based on a DataObject'
         );
-        parent::apply($query, $schema, $config);
+        parent::apply($field, $schema, $config);
     }
 
     protected function updateInputBuilder(NestedInputBuilder $builder): void
