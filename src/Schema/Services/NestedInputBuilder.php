@@ -213,15 +213,16 @@ class NestedInputBuilder
             $fieldType = $fieldObj->getNamedType();
             $nestedType = $this->schema->getCanonicalType($fieldType);
 
-            $isScalar = (bool) Schema::isInternalType($fieldType) || $this->schema->getEnum($fieldType);
+            $isScalar = (bool) Schema::isInternalType($fieldType) || $this->schema->getScalar($fieldType);
+            $isEnum = (bool) $this->schema->getEnum($fieldType);
 
             if ($data === self::SELF_REFERENTIAL) {
                 $inputType->addField($fieldName, $inputType->getName());
-            } elseif (!is_array($data) && !$nestedType && $isScalar) {
+            } elseif (!is_array($data) && !$nestedType && ($isScalar || $isEnum)) {
                 // Regular field, e.g. scalar
                 $inputType->addField(
                     $fieldName,
-                    $this->getLeafNodeType($fieldType)
+                    $this->getLeafNodeType($isEnum ? 'String' : $fieldType)
                 );
             }
             // Make sure the input type got at least one field
