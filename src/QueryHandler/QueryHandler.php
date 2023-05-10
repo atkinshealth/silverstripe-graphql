@@ -3,6 +3,7 @@
 
 namespace SilverStripe\GraphQL\QueryHandler;
 
+use GraphQL\Error\DebugFlag;
 use GraphQL\Error\Error;
 use GraphQL\Error\SyntaxError;
 use GraphQL\Executor\ExecutionResult;
@@ -45,8 +46,6 @@ class QueryHandler implements
      */
     private array $contextProviders = [];
 
-    private array $errorFormatter = [self::class, 'formatError'];
-
     /**
      * @config
      * @var callable|null
@@ -57,6 +56,9 @@ class QueryHandler implements
      * @var QueryMiddleware[]
      */
     private array $middlewares = [];
+
+
+    private bool $errorIncludeDebugMessage = false;
 
     /**
      * QueryHandler constructor.
@@ -154,28 +156,14 @@ class QueryHandler implements
      */
     public function serialiseResult(ExecutionResult $executionResult): array
     {
-        // Format object
-        if (!empty($executionResult->errors)) {
-            return [
-                'data' => $executionResult->data,
-                'errors' => array_map($this->errorFormatter, $executionResult->errors ?? []),
-            ];
-        } else {
-            return [
-                'data' => $executionResult->data,
-            ];
-        }
+        $this->extend('onBeforeSerialiseResult', $executionResult);
+        return $executionResult->toArray(
+            $this->errorIncludeDebugMessage
+                ? DebugFlag::INCLUDE_DEBUG_MESSAGE | DebugFlag::INCLUDE_TRACE
+                : DebugFlag::NONE,
+        );
     }
 
-    /**
-     * @param callable $errorFormatter
-     * @return QueryHandler
-     */
-    public function setErrorFormatter(callable $errorFormatter): self
-    {
-        $this->errorFormatter = $errorFormatter;
-        return $this;
-    }
 
     /**
      * @param callable $errorHandler
@@ -354,5 +342,13 @@ class QueryHandler implements
             }
         }
         return 'graphql';
+    }
+
+    /**
+     * @param bool $errorIncludeDebugMessage
+     */
+    public function setErrorIncludeDebugMessage(bool $errorIncludeDebugMessage): void
+    {
+        $this->errorIncludeDebugMessage = $errorIncludeDebugMessage;
     }
 }

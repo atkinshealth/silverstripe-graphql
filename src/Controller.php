@@ -2,7 +2,10 @@
 
 namespace SilverStripe\GraphQL;
 
+use BadMethodCallException;
 use Exception;
+use GraphQL\Error\Error;
+use GraphQL\Executor\ExecutionResult;
 use GraphQL\Language\Parser;
 use GraphQL\Language\Source;
 use InvalidArgumentException;
@@ -13,6 +16,7 @@ use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Dev\Backtrace;
 use SilverStripe\EventDispatcher\Dispatch\Dispatcher;
 use SilverStripe\EventDispatcher\Symfony\Event;
 use SilverStripe\GraphQL\Auth\Handler;
@@ -20,17 +24,15 @@ use SilverStripe\GraphQL\PersistedQuery\RequestProcessor;
 use SilverStripe\GraphQL\QueryHandler\QueryHandler;
 use SilverStripe\GraphQL\QueryHandler\QueryHandlerInterface;
 use SilverStripe\GraphQL\QueryHandler\QueryStateProvider;
-use SilverStripe\GraphQL\Schema\Exception\SchemaBuilderException;
 use SilverStripe\GraphQL\QueryHandler\RequestContextProvider;
 use SilverStripe\GraphQL\QueryHandler\SchemaConfigProvider;
 use SilverStripe\GraphQL\QueryHandler\TokenContextProvider;
 use SilverStripe\GraphQL\QueryHandler\UserContextProvider;
+use SilverStripe\GraphQL\Schema\Exception\SchemaBuilderException;
 use SilverStripe\GraphQL\Schema\SchemaBuilder;
 use SilverStripe\Security\Member;
 use SilverStripe\Security\Permission;
 use SilverStripe\Versioned\Versioned;
-use BadMethodCallException;
-use SilverStripe\Dev\Backtrace;
 
 /**
  * Top level controller for handling graphql requests.
@@ -130,18 +132,22 @@ class Controller extends BaseController
             $operationName = QueryHandler::getOperationName($queryDocument);
             Dispatcher::singleton()->trigger($event, Event::create($operationName, $eventContext));
         } catch (Exception $exception) {
-            $error = ['message' => $exception->getMessage()];
+            if (isset($handler)) {
+                $result = $handler->serialiseResult(new ExecutionResult(null, [Error::createLocatedError($exception)]));
+            } else {
+                $error = ['message' => $exception->getMessage()];
 
-            if (Director::isDev()) {
-                $error['code'] = $exception->getCode();
-                $error['file'] = $exception->getFile();
-                $error['line'] = $exception->getLine();
-                $error['trace'] = $this->prepareBacktrace($exception->getTrace());
+                if (Director::isDev()) {
+                    $error['code'] = $exception->getCode();
+                    $error['file'] = $exception->getFile();
+                    $error['line'] = $exception->getLine();
+                    $error['trace'] = $this->prepareBacktrace($exception->getTrace());
+                }
+
+                $result = [
+                    'errors' => [$error]
+                ];
             }
-
-            $result = [
-                'errors' => [$error]
-            ];
         }
 
         $response = $this->addCorsHeaders($request, new HTTPResponse(json_encode($result)));
