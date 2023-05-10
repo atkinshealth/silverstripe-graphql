@@ -42,8 +42,11 @@ Name: graphql-default-dev
 Except:
   environment: live
 ---
-# When not in live mode, throw all errors, so the JSON response doesn't get corrupted with notice/warnings
+# When not in live mode, throw all errors, so the JSON response doesn't get corrupted with notice/warnings, and
+# include debug messages & trace in error output
 SilverStripe\Core\Injector\Injector:
   SilverStripe\GraphQL\QueryHandler\QueryHandlerInterface.default:
     properties:
       errorHandler: [SilverStripe\GraphQL\QueryHandler\DevErrorHandler, handleError]
+      errorIncludeDebugMessage: true
+
