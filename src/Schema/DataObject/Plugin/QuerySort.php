@@ -120,8 +120,9 @@ class QuerySort extends AbstractQuerySortPlugin
                     $path,
                     $rootType
                 );
-                $list = $list->sort($normalised, $value);
+                $sort[$normalised] = $value;
             }
+            $list = empty($sort) ? $list : $list->sort($sort);
 
             return $list;
         };
