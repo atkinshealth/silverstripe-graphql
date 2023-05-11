@@ -778,7 +778,9 @@ class Schema implements ConfigurationApplier
             : $modelType;
         $this->models[$modelType->getName()] = $typeObj;
         foreach ($modelType->getExtraTypes() as $type) {
-            if ($type instanceof ModelType) {
+            if ($type instanceof Enum) {
+                $this->addEnum($type);
+            } elseif ($type instanceof ModelType) {
                 $this->addModel($type);
             } else {
                 $this->addType($type);
