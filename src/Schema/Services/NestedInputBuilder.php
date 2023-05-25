@@ -197,7 +197,7 @@ class NestedInputBuilder
                 $type->getName()
             );
 
-            if (!$fieldObj) {
+            if ($customType && $customResolver) {
                 $fieldObj = Field::create($fieldName, [
                     'type' => $customType,
                     'resolver' => $customResolver,
