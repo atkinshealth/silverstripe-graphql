@@ -18,12 +18,16 @@ use SilverStripe\ORM\DataObject;
 use Closure;
 use SilverStripe\ORM\Sortable;
 use Exception;
+use GraphQL\Type\Definition\ResolveInfo;
+use SilverStripe\GraphQL\Schema\Traits\SortTrait;
 
 /**
  * Adds a sort parameter to a DataObject query
  */
 class QuerySort extends AbstractQuerySortPlugin
 {
+    use SortTrait;
+
     const IDENTIFIER = 'sort';
 
     public function getIdentifier(): string
@@ -87,7 +91,6 @@ class QuerySort extends AbstractQuerySortPlugin
         return $filters;
     }
 
-
     /**
      * @param array $context
      * @return Closure
@@ -96,12 +99,21 @@ class QuerySort extends AbstractQuerySortPlugin
     {
         $fieldName = $context['fieldName'];
         $rootType = $context['rootType'];
-        return function (?Sortable $list, array $args, array $context) use ($fieldName, $rootType) {
+        return function (?Sortable $list, array $args, array $context, ResolveInfo $info) use ($fieldName, $rootType) {
             if ($list === null) {
                 return null;
             }
-            $filterArgs = $args[$fieldName] ?? [];
-            $paths = NestedInputBuilder::buildPathsFromArgs($filterArgs);
+
+            if (!isset($args[$fieldName])) {
+                return $list;
+            }
+
+            $sortArgs = self::getSortArgs($info, $args, $fieldName);
+            $paths = NestedInputBuilder::buildPathsFromArgs($sortArgs);
+            if (empty($paths)) {
+                return $list;
+            }
+
             $schemaContext = SchemaConfigProvider::get($context);
             if (!$schemaContext) {
                 throw new Exception(sprintf(
@@ -111,6 +123,7 @@ class QuerySort extends AbstractQuerySortPlugin
                 ));
             }
 
+            $normalisedPaths = [];
             foreach ($paths as $path => $value) {
                 $normalised = $schemaContext->mapPath($rootType, $path);
                 Schema::invariant(
@@ -120,11 +133,11 @@ class QuerySort extends AbstractQuerySortPlugin
                     $path,
                     $rootType
                 );
-                $sort[$normalised] = $value;
-            }
-            $list = empty($sort) ? $list : $list->sort($sort);
 
-            return $list;
+                $normalisedPaths[$normalised] = $value;
+            }
+
+            return empty($normalisedPaths) ? $list : $list->sort($normalisedPaths);
         };
     }
 

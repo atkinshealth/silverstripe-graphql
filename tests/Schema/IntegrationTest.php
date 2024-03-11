@@ -24,6 +24,7 @@ use SilverStripe\GraphQL\Schema\Storage\CodeGenerationStoreCreator;
 use SilverStripe\GraphQL\Schema\Storage\HashNameObfuscator;
 use SilverStripe\GraphQL\Schema\Storage\NameObfuscator;
 use SilverStripe\GraphQL\Tests\Fake\DataObjectFake;
+use SilverStripe\GraphQL\Tests\Fake\FakeDataObjectWithCanView;
 use SilverStripe\GraphQL\Tests\Fake\FakePage;
 use SilverStripe\GraphQL\Tests\Fake\FakeProduct;
 use SilverStripe\GraphQL\Tests\Fake\FakeProductPage;
@@ -36,10 +37,16 @@ use SilverStripe\Security\Member;
 use Symfony\Component\Filesystem\Filesystem;
 use GraphQL\Type\Schema as GraphQLSchema;
 use Exception;
+use GraphQL\Error\Error as GraphQLError;
+use GraphQL\Validator\DocumentValidator;
+use GraphQL\Validator\Rules\CustomValidationRule;
+use GraphQL\Validator\Rules\QueryComplexity;
+use GraphQL\Validator\Rules\QueryDepth;
+use GraphQL\Validator\ValidationContext;
+use ReflectionProperty;
 
 class IntegrationTest extends SapphireTest
 {
-
     protected static $extra_dataobjects = [
         FakePage::class,
         DataObjectFake::class,
@@ -49,6 +56,7 @@ class IntegrationTest extends SapphireTest
         FakeProduct::class,
         FakeReview::class,
         Member::class,
+        FakeDataObjectWithCanView::class,
     ];
 
     protected function setUp(): void
@@ -64,6 +72,7 @@ class IntegrationTest extends SapphireTest
         DataObjectFake::get()->removeAll();
         File::get()->removeAll();
         Member::get()->removeAll();
+        FakeDataObjectWithCanView::get()->removeAll();
     }
 
     public function testSimpleType()
@@ -409,7 +418,100 @@ GRAPHQL;
         $this->assertMissingField($result, 'title');
     }
 
-    public function testFilterAndSort()
+    public function provideFilterAndSort(): array
+    {
+        return [
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(filter: { id: { eq: _ID_PLACEHOLDER_ } }) {
+                    id
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'id',
+                'placeholderRecord' => 'fake1',
+                'expected' => 'fake1',
+            ],
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(filter: { id: { ne: _ID_PLACEHOLDER_ } }) {
+                    id
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'id',
+                'placeholderRecord' => 'fake1',
+                'expected' => 'fake2',
+            ],
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(sort: { myField: ASC }) {
+                    myField
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'myField',
+                'placeholderRecord' => '',
+                'expected' => 'test1',
+            ],
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(sort: { AuthorID: DESC, myField: ASC }) {
+                    myField
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'myField',
+                'placeholderRecord' => '',
+                'expected' => 'test2',
+            ],
+            [
+              'query' => <<<GRAPHQL
+              query {
+                readOneDataObjectFake(sort: { myField: ASC, AuthorID: DESC }) {
+                  myField
+                }
+              }
+              GRAPHQL,
+              'testAgainst' => 'myField',
+              'placeholderRecord' => '',
+              'expected' => 'test1',
+            ],
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(sort: { myField: DESC }) {
+                    myField
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'myField',
+                'placeholderRecord' => '',
+                'expected' => 'test4',
+            ],
+            [
+                'query' => <<<GRAPHQL
+                query {
+                  readOneDataObjectFake(sort: { AuthorID: ASC, myField: DESC }, filter: { id: { ne: _ID_PLACEHOLDER_ } }) {
+                    myField
+                  }
+                }
+                GRAPHQL,
+                'testAgainst' => 'myField',
+                'placeholderRecord' => 'fake3',
+                'expected' => 'test4',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider provideFilterAndSort
+     */
+    public function testFilterAndSort(string $query, string $testAgainst, string $placeholderRecord, string $expected): void
     {
         $dir = '_' . __FUNCTION__;
 
@@ -425,6 +527,12 @@ GRAPHQL;
         $dataObject2 = DataObjectFake::create(['MyField' => 'test2', 'AuthorID' => $author2->ID]);
         $dataObject2->write();
 
+        $dataObject3 = DataObjectFake::create(['MyField' => 'test3', 'AuthorID' => $author2->ID]);
+        $dataObject3->write();
+
+        $dataObject4 = DataObjectFake::create(['MyField' => 'test4', 'AuthorID' => $author1->ID]);
+        $dataObject4->write();
+
         $file1 = File::create(['Title' => 'file1']);
         $file1->write();
 
@@ -436,93 +544,46 @@ GRAPHQL;
 
         $id1 = $dataObject1->ID;
         $id2 = $dataObject2->ID;
+        $id3 = $dataObject3->ID;
+        $id4 = $dataObject4->ID;
+
+        if ($testAgainst === 'id') {
+            switch ($expected) {
+                case 'fake1':
+                    $expected = $id1;
+                    break;
+                case 'fake2':
+                    $expected = $id2;
+                    break;
+                case 'fake3':
+                    $expected = $id3;
+                    break;
+                default:
+                    throw new LogicException("No ID known for '$expected'");
+            }
+        }
+
+        $placeholderID = null;
+        switch ($placeholderRecord) {
+            case 'fake1':
+                $placeholderID = $id1;
+                break;
+            case 'fake2':
+                $placeholderID = $id2;
+                break;
+            case 'fake3':
+                $placeholderID = $id3;
+                break;
+        }
+        if ($placeholderID) {
+            $query = str_replace('_ID_PLACEHOLDER_', (string) $placeholderID, $query);
+        }
 
         $schema = $this->createSchema(new TestSchemaBuilder([$dir]));
 
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(filter: { id: { eq: $id1 } }) {
-    id
-  }
-}
-GRAPHQL;
         $result = $this->querySchema($schema, $query);
         $this->assertSuccess($result);
-        $this->assertResult('readOneDataObjectFake.id', $id1, $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(filter: { id: { ne: $id1 } }) {
-    id
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-        $this->assertSuccess($result);
-        $this->assertResult('readOneDataObjectFake.id', $id2, $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(sort: { myField: ASC }) {
-    myField
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-        $this->assertSuccess($result);
-        $this->assertResult('readOneDataObjectFake.myField', 'test1', $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(sort: { myField: DESC }) {
-    myField
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-        $this->assertSuccess($result);
-        $this->assertResult('readOneDataObjectFake.myField', 'test2', $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(sort: { myField: DESC }, filter: { id: { ne: $id2 } }) {
-    myField
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-        $this->assertSuccess($result);
-        $this->assertResult('readOneDataObjectFake.myField', 'test1', $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(filter: { author: { firstName: { eq: "tester1" } } }) {
-    id
-    author {
-      firstName
-    }
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-        // Nested fields aren't working. Needs refactoring.
-//        $this->assertSuccess($result);
-//        $this->assertResult('readOneDataObjectFake.author.firstName', 'tester1', $result);
-
-        $query = <<<GRAPHQL
-query {
-  readOneDataObjectFake(filter: { author: { firstName: { eq: "tester2" } } }) {
-    id
-    author {
-      firstName
-    }
-  }
-}
-GRAPHQL;
-        $result = $this->querySchema($schema, $query);
-
-//        $this->assertSuccess($result);
-//        $this->assertNull($result['data']['readOneDataObjectFake']);
+        $this->assertResult("readOneDataObjectFake.{$testAgainst}", $expected, $result);
     }
 
 
@@ -608,6 +669,182 @@ GRAPHQL;
         $this->assertSuccess($result);
         $this->assertResult('readOneDataObjectFake.myAliasedField', 'test2', $result);
         $this->assertResult('readOneDataObjectFake.author', null, $result);
+    }
+
+    public function provideFilterAndSortOnlyRead(): array
+    {
+        return [
+          'read with sort' => [
+            'fixture' => '_QuerySort',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { author: { id: DESC }, myField: ASC }) {
+                nodes {
+                  myField
+                  author {
+                    firstName
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test2", "author" => ["firstName" => "tester2"]],
+              ["myField" => "test3", "author" => ["firstName" => "tester2"]],
+              ["myField" => "test1", "author" => ["firstName" => "tester1"]],
+            ],
+          ],
+          'read with sorter files title DESC' => [
+            'fixture' => '_SortPlugin',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { myField: ASC }) {
+                nodes {
+                  myField
+                  files(sort: { title: DESC }) {
+                    title
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test1", "files" => [["title" => "file4"], ["title" => "file3"], ["title" => "file2"], ["title" => "file1"]]],
+              ["myField" => "test2", "files" => []],
+              ["myField" => "test3", "files" => []],
+            ],
+          ],
+          'read with sorter files ParentID ACS, name DESC' => [
+            'fixture' => '_SortPlugin',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { myField: ASC }) {
+                nodes {
+                  myField
+                  files(sort: { ParentID: ASC, name: DESC }) {
+                    title
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test1", "files" => [["title" => "file2"],["title" => "file1"], ["title" => "file4"],["title" => "file3"]]],
+              ["myField" => "test2", "files" => []],
+              ["myField" => "test3", "files" => []],
+            ],
+          ],
+          'read with sorter files ParentID DESC, name ASC' => [
+            'fixture' => '_SortPlugin',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { myField: ASC }) {
+                nodes {
+                  myField
+                  files(sort: { ParentID: DESC, name: ASC }) {
+                    title
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test1", "files" => [["title" => "file3"],["title" => "file4"], ["title" => "file1"],["title" => "file2"]]],
+              ["myField" => "test2", "files" => []],
+              ["myField" => "test3", "files" => []],
+            ],
+          ],
+          'read with sorter files name ASC, ParentID DESC' => [
+            'fixture' => '_SortPlugin',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { myField: ASC }) {
+                nodes {
+                  myField
+                  files(sort: { name: ASC, ParentID: DESC }) {
+                    title
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test1", "files" => [["title" => "file3"],["title" => "file1"], ["title" => "file4"],["title" => "file2"]]],
+              ["myField" => "test2", "files" => []],
+              ["myField" => "test3", "files" => []],
+            ],
+          ],
+          'read with sorter files name DESC, ParentID ASC' => [
+            'fixture' => '_SortPlugin',
+            'query' => <<<GRAPHQL
+            query {
+              readDataObjectFakes(sort: { myField: ASC }) {
+                nodes {
+                  myField
+                  files(sort: { name: DESC, ParentID: ASC }) {
+                    title
+                  }
+                }
+              }
+            }
+            GRAPHQL,
+            'expected' => [
+              ["myField" => "test1", "files" => [["title" => "file2"],[ "title" => "file4"],["title" => "file1"],["title" => "file3"]]],
+              ["myField" => "test2", "files" => []],
+              ["myField" => "test3", "files" => []],
+            ],
+          ],
+        ];
+    }
+
+    /**
+     * @dataProvider provideFilterAndSortOnlyRead
+     */
+    public function testFilterAndSortOnlyRead(string $fixture, string $query, array $expected)
+    {
+        $author = Member::create(['FirstName' => 'tester1']);
+        $author->write();
+
+        $author2 = Member::create(['FirstName' => 'tester2']);
+        $author2->write();
+
+        $dataObject1 = DataObjectFake::create(['MyField' => 'test1', 'AuthorID' => $author->ID]);
+        $dataObject1->write();
+
+        $dataObject2 = DataObjectFake::create(['MyField' => 'test2', 'AuthorID' => $author2->ID]);
+        $dataObject2->write();
+
+        $dataObject3 = DataObjectFake::create(['MyField' => 'test3', 'AuthorID' => $author2->ID]);
+        $dataObject3->write();
+
+        $file1 = File::create(['Title' => 'file1', 'Name' => 'asc_name']);
+        $file1->ParentID = 1;
+        $file1->write();
+
+        $file2 = File::create(['Title' => 'file2', 'Name' => 'desc_name']);
+        $file2->ParentID = 1;
+        $file2->write();
+
+        $file3 = File::create(['Title' => 'file3', 'Name' => 'asc_name']);
+        $file3->ParentID = 2;
+        $file3->write();
+
+        $file4 = File::create(['Title' => 'file4', 'Name' => 'desc_name']);
+        $file4->ParentID = 2;
+        $file4->write();
+
+        $dataObject1->Files()->add($file1);
+        $dataObject1->Files()->add($file2);
+        $dataObject1->Files()->add($file3);
+        $dataObject1->Files()->add($file4);
+
+        $factory = new TestSchemaBuilder(['_' . __FUNCTION__ . $fixture]);
+        $schema = $this->createSchema($factory);
+
+        $result = $this->querySchema($schema, $query);
+        $this->assertSuccess($result);
+        $records = $result['data']['readDataObjectFakes']['nodes'] ?? [];
+        $this->assertResults($expected, $records);
     }
 
     public function testAggregateProperties()
@@ -772,6 +1009,43 @@ GRAPHQL;
             ['field1' => 'field1-9'],
             ['field1' => 'field1-10'],
         ], $records);
+    }
+
+    public function testCanViewPagination()
+    {
+        // FakeDataObjectWithCanView has a canView() check of `return $this->ID % 2` i.e. half the records are viewable
+        // This test will:
+        // - Create 20 records
+        // - Query 10 records
+        // - Assert that 5 records were returned
+        for ($i = 0; $i < 20; $i++) {
+            $obj = FakeDataObjectWithCanView::create(['Title' => "obj$i"]);
+            $obj->write();
+        }
+        $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+        $query = <<<GRAPHQL
+            query {
+              readFakeDataObjectWithCanViews(limit: 10) {
+                nodes {
+                  id
+                  title
+                }
+                edges {
+                  node {
+                    id
+                    title
+                  }
+                }
+              }
+            }
+        GRAPHQL;
+        $result = $this->querySchema($schema, $query);
+        $this->assertSuccess($result);
+        $records = $result['data']['readFakeDataObjectWithCanViews']['nodes'];
+        $this->assertCount(5, $records);
+        $ids = array_map(fn($record) => $record['id'], $records);
+        $filteredIDs = array_filter($ids, fn($id) => $id % 2);
+        $this->assertSame(count($ids), count($filteredIDs));
     }
 
     /**
@@ -1198,6 +1472,220 @@ GRAPHQL;
     }
 
     /**
+     * @dataProvider provideDefaultDepthLimit
+     */
+    public function testDefaultDepthLimit(int $queryDepth, int $limit)
+    {
+        // This global rule should be ignored.
+        DocumentValidator::addRule(new QueryDepth(1));
+
+        try {
+            $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+            $this->runDepthLimitTest($queryDepth, $limit, $schema);
+        } finally {
+            $this->removeDocumentValidatorRule(QueryDepth::class);
+        }
+    }
+
+    public function provideDefaultDepthLimit()
+    {
+        return $this->createProviderForComplexityOrDepth(15);
+    }
+
+    /**
+     * @dataProvider provideCustomDepthLimit
+     */
+    public function testCustomDepthLimit(int $queryDepth, int $limit)
+    {
+        // This global rule should be ignored.
+        DocumentValidator::addRule(new QueryDepth(1));
+
+        try {
+            $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+            $this->runDepthLimitTest($queryDepth, $limit, $schema);
+        } finally {
+            $this->removeDocumentValidatorRule(QueryDepth::class);
+        }
+    }
+
+    public function provideCustomDepthLimit()
+    {
+        return $this->createProviderForComplexityOrDepth(25);
+    }
+
+    /**
+     * @dataProvider provideCustomComplexityLimit
+     */
+    public function testCustomComplexityLimit(int $queryComplexity, int $limit)
+    {
+        // This global rule should be ignored.
+        DocumentValidator::addRule(new QueryComplexity(1));
+
+        try {
+            $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+            $this->runComplexityLimitTest($queryComplexity, $limit, $schema);
+        } finally {
+            $this->removeDocumentValidatorRule(QueryComplexity::class);
+        }
+    }
+
+    public function provideCustomComplexityLimit()
+    {
+        return $this->createProviderForComplexityOrDepth(10);
+    }
+
+    /**
+     * @dataProvider provideDefaultNodeLimit
+     */
+    public function testDefaultNodeLimit(int $numNodes, int $limit)
+    {
+        $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+        $this->runNodeLimitTest($numNodes, $limit, $schema);
+    }
+
+    public function provideDefaultNodeLimit()
+    {
+        return $this->createProviderForComplexityOrDepth(500);
+    }
+
+    /**
+     * @dataProvider provideCustomNodeLimit
+     */
+    public function testCustomNodeLimit(int $numNodes, int $limit)
+    {
+        $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+        $this->runNodeLimitTest($numNodes, $limit, $schema);
+    }
+
+    public function provideCustomNodeLimit()
+    {
+        return $this->createProviderForComplexityOrDepth(200);
+    }
+
+    public function testGlobalRuleNotRemoved()
+    {
+        // This global rule should NOT be ignored.
+        DocumentValidator::addRule(new CustomValidationRule('never-passes', function (ValidationContext $context) {
+            $context->reportError(new GraphQLError('This is the custom rule'));
+            return [];
+        }));
+
+        try {
+            $schema = $this->createSchema(new TestSchemaBuilder(['_' . __FUNCTION__]));
+            $result = $this->querySchema($schema, $this->craftRecursiveQuery(15));
+            $this->assertFailure($result);
+            $this->assertErrorMatchingRegex($result, '/^This is the custom rule$/');
+        } finally {
+            $this->removeDocumentValidatorRule('never-passes');
+        }
+    }
+
+    private function removeDocumentValidatorRule(string $ruleName): void
+    {
+        $reflectionRules = new ReflectionProperty(DocumentValidator::class, 'rules');
+        $reflectionRules->setAccessible(true);
+        $rules = $reflectionRules->getValue();
+        unset($rules[$ruleName]);
+        $reflectionRules->setValue($rules);
+    }
+
+    private function createProviderForComplexityOrDepth(int $limit): array
+    {
+        return [
+            'far less than limit' => [1, $limit],
+            'one less than limit' => [$limit - 1, $limit],
+            'exactly at the limit' => [$limit, $limit],
+            'one more than limit' => [$limit + 1, $limit],
+            'far more than limit' => [$limit + 25, $limit],
+        ];
+    }
+
+    private function runDepthLimitTest(int $queryDepth, int $maxDepth, Schema $schema): void
+    {
+        $result = $this->querySchema($schema, $this->craftRecursiveQuery($queryDepth));
+        if ($queryDepth > $maxDepth) {
+            $this->assertFailure($result);
+            $this->assertErrorMatchingRegex($result, '/^Max query depth should be ' . $maxDepth . ' but got ' . $queryDepth . '\.$/');
+        } else {
+            // Note that the depth limit is based on the depth of the QUERY, not of the RESULTS, so all we really care about
+            // is that the query was successful, not what the results were.
+            $this->assertSuccess($result);
+        }
+    }
+
+    private function runComplexityLimitTest(int $queryComplexity, int $maxComplexity, Schema $schema): void
+    {
+        $result = $this->querySchema($schema, $this->craftComplexQuery($queryComplexity));
+        if ($queryComplexity > $maxComplexity) {
+            $this->assertFailure($result);
+            $this->assertErrorMatchingRegex($result, '/^Max query complexity should be ' . $maxComplexity . ' but got ' . $queryComplexity . '\.$/');
+        } else {
+            // Note that the complexity limit is based on the complexity of the QUERY, not of the RESULTS, so all we really care about
+            // is that the query was successful, not what the results were.
+            $this->assertSuccess($result);
+        }
+    }
+
+    private function runNodeLimitTest(int $queryNodeCount, int $maxNodes, Schema $schema): void
+    {
+        $result = $this->querySchema($schema, $this->craftComplexQuery($queryNodeCount - 1));
+        if ($queryNodeCount > $maxNodes) {
+            $this->assertFailure($result);
+            $this->assertErrorMatchingRegex($result, '/^GraphQL query body must not be longer than ' . $maxNodes . ' nodes\.$/');
+        } else {
+            // Note that the complexity limit is based on the complexity of the QUERY, not of the RESULTS, so all we really care about
+            // is that the query was successful, not what the results were.
+            $this->assertSuccess($result);
+        }
+    }
+
+    private function craftRecursiveQuery(int $queryDepth): string
+    {
+        $query = 'query{ readFakeSiteTrees { nodes {';
+
+        for ($i = 0; $i < $queryDepth; $i++) {
+            if ($i % 3 === 0) {
+                $query .= 'id title';
+            } elseif ($i % 3 === 1) {
+                $query .= ' parent {';
+            } elseif ($i % 3 === 2) {
+                if ($i === $queryDepth - 1) {
+                    $query .= 'id title';
+                } else {
+                    $query .= 'id title children { nodes {';
+                }
+            }
+        }
+
+        $endsWith = strrpos($query, 'id title') === strlen($query) - strlen('id title');
+        $query .= $endsWith ? '' : 'id title';
+        // Add all of the closing brackets
+        $numChars = array_count_values(str_split($query));
+        for ($i = 0; $i < $numChars['{']; $i++) {
+            $query .= '}';
+        }
+
+        return $query;
+    }
+
+    private function craftComplexQuery(int $queryComplexity): string
+    {
+        $query = 'query{ readOneFakeSiteTree { id';
+
+        // skip the first two complexity, because those are taken up by "readOneFakeSiteTree { id" above
+        for ($i = 0; $i < $queryComplexity - 2; $i++) {
+            $query .= ' id';
+        }
+        // Add all of the closing brackets
+        $numChars = array_count_values(str_split($query));
+        for ($i = 0; $i < $numChars['{']; $i++) {
+            $query .= '}';
+        }
+
+        return $query;
+    }
+
+    /**
      * @param TestSchemaBuilder $factory
      * @return Schema
      * @throws SchemaBuilderException
@@ -1254,18 +1742,14 @@ GRAPHQL;
     private function assertSuccess(array $result)
     {
         $errors = $result['errors'] ?? [];
-        if (!empty($errors)) {
-            $this->fail('Failed to assert successful query. Got errors: ' . json_encode($errors, JSON_PRETTY_PRINT));
-        }
+        $this->assertEmpty($errors, 'Failed to assert successful query. Got errors: ' . json_encode($errors, JSON_PRETTY_PRINT));
         $error = $result['error'] ?? null;
-        if ($error) {
-            $this->fail('Failed to assert successful query. Got error: ' . $error);
-        }
+        $this->assertFalse((bool) $error, 'Failed to assert successful query. Got error: ' . $error);
     }
 
     private function assertFailure(array $result)
     {
-        $errors = $result['errors'] ?? [];
+        $errors = $result['errors'] ?? $result['error'] ?? [];
         if (empty($errors)) {
             $this->fail('Failed to assert that query was not successful');
         }
@@ -1273,14 +1757,38 @@ GRAPHQL;
 
     private function assertMissingField(array $result, string $fieldName)
     {
-        $errors = $result['errors'] ?? [];
-        foreach ($errors as $error) {
-            if (preg_match('/^Cannot query field "' . $fieldName . '"/', $error['message'] ?? '')) {
-                return;
-            }
-        }
+        $this->assertErrorMatchingRegex(
+            $result,
+            '/^Cannot query field "' . $fieldName . '"/',
+            'Failed to assert that result was missing field "' . $fieldName . '"'
+        );
+    }
 
-        $this->fail('Failed to assert that result was missing field "' . $fieldName . '"');
+    private function assertErrorMatchingRegex(
+        array $result,
+        string $errorRegex,
+        string $message = 'Failed to assert that expected error was present.'
+    ) {
+        $errors = $result['errors'] ?? [];
+        if (isset($result['error'])) {
+            $errors[] = ['message' => $result['error']];
+        }
+        $errorMessages = [];
+        $foundError = false;
+        foreach ($errors as $error) {
+            if (!isset($error['message'])) {
+                continue;
+            }
+            if (preg_match($errorRegex, $error['message'])) {
+                $foundError = true;
+                break;
+            }
+            $errorMessages[] = '"' . $error['message'] . '"';
+        }
+        $this->assertTrue(
+            $foundError,
+            $message . ' Regex was: ' . $errorRegex . ', Errors were: ' . implode(', ', $errorMessages)
+        );
     }
 
     private function assertResults(array $expected, array $actual)

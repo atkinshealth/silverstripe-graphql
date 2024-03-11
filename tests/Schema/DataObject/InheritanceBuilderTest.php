@@ -21,6 +21,11 @@ use SilverStripe\GraphQL\Tests\Fake\Inheritance\C;
 use SilverStripe\GraphQL\Tests\Fake\Inheritance\C1;
 use SilverStripe\GraphQL\Tests\Fake\Inheritance\C2;
 use SilverStripe\GraphQL\Tests\Fake\Inheritance\C2a;
+use SilverStripe\GraphQL\Tests\Fake\Inheritance\MyOrig;
+use SilverStripe\GraphQL\Tests\Fake\Inheritance\MySubclass;
+use SilverStripe\Core\Config\Config;
+use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Core\Injector\SilverStripeServiceConfigurationLocator;
 
 class InheritanceBuilderTest extends SapphireTest
 {
@@ -40,6 +45,8 @@ class InheritanceBuilderTest extends SapphireTest
         C1::class,
         C2::class,
         C2a::class,
+        MyOrig::class,
+        MySubclass::class,
     ];
 
     public function testBaseModel()
@@ -313,5 +320,39 @@ class InheritanceBuilderTest extends SapphireTest
 
         $this->assertEmpty(array_diff($expected ?? [], $compare));
         $this->assertEmpty(array_diff($compare ?? [], $expected));
+    }
+
+    public function testFillAncestryInjectorSubclass()
+    {
+        // Update configLocator of the Injector inst() in order to clear the cache in
+        // SilverStripeServiceConfigurationLocator() which has no API to clear the cache.
+        // This is done to fix bleed over from the unit test UsedOnTableTest::getUsage()
+        // which will cache the config for MyOrig::class as that test will automatically
+        // cache config for most DataObjects
+        Injector::inst()->setConfigLocator(new SilverStripeServiceConfigurationLocator());
+        try {
+            Config::modify()->set(Injector::class, MyOrig::class, ['class' => MySubclass::class]);
+            $obj = MyOrig::create();
+            $this->assertSame(MySubclass::class, get_class($obj));
+            $schema = new TestSchema();
+            $schema->applyConfig([
+                'models' => [
+                    MyOrig::class => [
+                        'fields' => [
+                            'MyField' => true,
+                            'MySubclassField' => true,
+                        ],
+                    ],
+                ]
+            ]);
+            $schema->createStoreableSchema();
+            $modelType = $schema->getModelByClassName(MySubclass::class);
+            $builder = new InheritanceBuilder($schema);
+            $builder->fillAncestry($modelType);
+            $this->assertFields(['id', 'MyField', 'MySubclassField'], $modelType);
+        } finally {
+            // reset the cache again to prevent bleed over into any other tests
+            Injector::inst()->setConfigLocator(new SilverStripeServiceConfigurationLocator());
+        }
     }
 }

@@ -166,12 +166,9 @@ class NestedInputBuilder
         }
         if (isset($fields[Schema::ALL]) && $fields[Schema::ALL]) {
             unset($fields[Schema::ALL]);
-            $fields = array_merge($this->buildAllFieldsConfig($type), $fields);
+            $fields = array_merge($fields, $this->buildAllFieldsConfig($type));
         }
         foreach ($fields as $fieldName => $data) {
-            if ($fieldName === Schema::ALL) {
-                $this->buildAllFieldsConfig($type);
-            }
             if ($data === false) {
                 continue;
             }
