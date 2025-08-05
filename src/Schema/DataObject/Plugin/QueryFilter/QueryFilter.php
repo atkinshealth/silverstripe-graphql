@@ -46,9 +46,10 @@ class QueryFilter extends AbstractQueryFilterPlugin
      */
     public function apply(ModelField $field, Schema $schema, array $config = []): void
     {
+        $sourceClass = $field->getModelType()?->getModel()?->getSourceClass();
         Schema::invariant(
-            is_subclass_of(
-                $field->getModel()->getSourceClass(),
+            $sourceClass && is_subclass_of(
+                $sourceClass,
                 DataObject::class
             ),
             'Cannot apply plugin %s to a query that is not based on a DataObject'
