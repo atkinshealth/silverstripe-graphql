@@ -41,22 +41,22 @@ class QuerySort extends AbstractQuerySortPlugin
     }
 
     /**
-     * @param ModelQuery $query
+     * @param ModelField $field
      * @param Schema $schema
      * @param array $config
      * @throws SchemaBuilderException
      */
-    public function apply(ModelQuery $query, Schema $schema, array $config = []): void
+    public function apply(ModelField $field, Schema $schema, array $config = []): void
     {
         Schema::invariant(
             is_subclass_of(
-                $query->getModel()->getSourceClass(),
+                $field->getModelType()->getModel()->getSourceClass(),
                 DataObject::class
             ),
             'Cannot apply plugin %s to a query that is not based on a DataObject',
             $this->getIdentifier()
         );
-        parent::apply($query, $schema, $config);
+        parent::apply($field, $schema, $config);
     }
 
     /**
