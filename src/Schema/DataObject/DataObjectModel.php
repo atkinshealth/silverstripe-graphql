@@ -146,7 +146,7 @@ class DataObjectModel implements
             $queryConfig = array_merge([
                 'type' => sprintf('[%s!]!', $type),
             ], $config);
-            $query = ModelQuery::create($this, $fieldName, $queryConfig);
+            $query = ModelField::create($fieldName, $queryConfig, $this);
             $query->setDefaultPlugins($this->getModelConfiguration()->getNestedQueryPlugins());
 
             return $query;
