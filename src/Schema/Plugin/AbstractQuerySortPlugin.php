@@ -7,7 +7,9 @@ use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Injector\Injectable;
 use SilverStripe\GraphQL\Schema\Exception\SchemaBuilderException;
 use SilverStripe\GraphQL\Schema\Field\Field;
+use SilverStripe\GraphQL\Schema\Field\ModelField;
 use SilverStripe\GraphQL\Schema\Field\ModelQuery;
+use SilverStripe\GraphQL\Schema\Interfaces\ModelFieldPlugin;
 use SilverStripe\GraphQL\Schema\Interfaces\ModelQueryPlugin;
 use SilverStripe\GraphQL\Schema\Interfaces\SchemaUpdater;
 use SilverStripe\GraphQL\Schema\Resolver\ResolverReference;
@@ -20,7 +22,7 @@ use SilverStripe\GraphQL\Schema\Type\Type;
 /**
  * Generic plugin that can be used to add sort paramaters to a query
  */
-abstract class AbstractQuerySortPlugin implements SchemaUpdater, ModelQueryPlugin
+abstract class AbstractQuerySortPlugin implements SchemaUpdater, ModelFieldPlugin
 {
     use Injectable;
     use Configurable;
@@ -34,19 +36,19 @@ abstract class AbstractQuerySortPlugin implements SchemaUpdater, ModelQueryPlugi
     /**
      * @throws SchemaBuilderException
      */
-    public function apply(ModelQuery $query, Schema $schema, array $config = []): void
+    public function apply(ModelField $field, Schema $schema, array $config = []): void
     {
         $fields = $config['fields'] ?? Schema::ALL;
-        $builder = NestedInputBuilder::create($query, $schema, $fields);
+        $builder = NestedInputBuilder::create($field, $schema, $fields);
         $this->updateInputBuilder($builder);
         $builder->populateSchema();
         if (!$builder->getRootType()) {
             return;
         }
-        $query->addArg($this->getFieldName(), $builder->getRootType()->getName());
-        $canonicalType = $schema->getCanonicalType($query->getNamedType());
-        $rootType = $canonicalType ? $canonicalType->getName() : $query->getNamedType();
-        $query->addResolverAfterware(
+        $field->addArg($this->getFieldName(), $builder->getRootType()->getName());
+        $canonicalType = $schema->getCanonicalType($field->getNamedType());
+        $rootType = $canonicalType ? $canonicalType->getName() : $field->getNamedType();
+        $field->addResolverAfterware(
             $this->getResolver($config),
             [
                 'fieldName' => $this->getFieldName(),
